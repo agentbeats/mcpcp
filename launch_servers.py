@@ -10,6 +10,7 @@ import subprocess
 import signal
 import time
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict
 
@@ -20,6 +21,28 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+# ANSI color codes
+class Colors:
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+
+# Color mapping for servers
+SERVER_COLORS = {
+    "mcp1.py": Colors.GREEN,
+    "mcp2.py": Colors.BLUE,
+    "mcp3.py": Colors.YELLOW,
+    "mcpcp.py": Colors.MAGENTA,
+}
 
 
 class ServerLauncher:
@@ -34,6 +57,7 @@ class ServerLauncher:
         self.proxy_port = proxy_port
         self.processes: List[subprocess.Popen] = []
         self.server_info: Dict[str, Dict] = {}
+        self.log_threads: List[threading.Thread] = []
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -44,6 +68,21 @@ class ServerLauncher:
         logger.info("Shutting down servers...")
         self.shutdown_all()
         sys.exit(0)
+
+    def _log_reader(self, server_name: str, pipe, stream_type: str):
+        """Read and display logs from a server with colored prefix."""
+        color = SERVER_COLORS.get(server_name, Colors.WHITE)
+        prefix = f"{color}[{server_name}]{Colors.RESET}"
+
+        try:
+            for line in iter(pipe.readline, ""):
+                if line.strip():
+                    print(f"{prefix} {line.rstrip()}")
+                    sys.stdout.flush()
+        except Exception:
+            pass
+        finally:
+            pipe.close()
 
     def discover_servers(self) -> List[Path]:
         """Discover all Python files in the servers directory."""
@@ -66,11 +105,38 @@ class ServerLauncher:
                 logger.error("Virtual environment not found")
                 return None
 
-            # Launch the server - don't capture output so logs are visible
+            # Launch the server with captured output
             cmd = [str(venv_python), str(server_file), "--port", str(port)]
-            logger.info(f"Starting {server_file.name} on port {port}")
+            color = SERVER_COLORS.get(server_file.name, Colors.WHITE)
+            logger.info(
+                f"{color}Starting {server_file.name} on port {port}{Colors.RESET}"
+            )
 
-            process = subprocess.Popen(cmd)
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+            )
+
+            # Start log reader threads
+            stdout_thread = threading.Thread(
+                target=self._log_reader,
+                args=(server_file.name, process.stdout, "OUT"),
+                daemon=True,
+            )
+            stderr_thread = threading.Thread(
+                target=self._log_reader,
+                args=(server_file.name, process.stderr, "ERR"),
+                daemon=True,
+            )
+
+            stdout_thread.start()
+            stderr_thread.start()
+
+            self.log_threads.extend([stdout_thread, stderr_thread])
 
             # Store server information
             self.server_info[server_file.name] = {
@@ -127,13 +193,14 @@ class ServerLauncher:
 
     def print_status(self):
         """Print server status."""
-        logger.info("=" * 50)
+        logger.info("=" * 60)
         for server_name, info in self.server_info.items():
             status = "RUNNING" if info["process"].poll() is None else "STOPPED"
+            color = SERVER_COLORS.get(server_name, Colors.WHITE)
             logger.info(
-                f"{server_name:<12} | Port: {info['port']:<4} | PID: {info['pid']:<6} | {status}"
+                f"{color}{server_name:<12}{Colors.RESET} | Port: {info['port']:<4} | PID: {info['pid']:<6} | {status}"
             )
-        logger.info("=" * 50)
+        logger.info("=" * 60)
 
     def monitor_servers(self):
         """Monitor running servers."""
@@ -147,8 +214,11 @@ class ServerLauncher:
                         # Find and log stopped server
                         for server_name, info in self.server_info.items():
                             if info["process"] == process:
+                                color = SERVER_COLORS.get(
+                                    server_name, Colors.WHITE
+                                )
                                 logger.warning(
-                                    f"{server_name} stopped unexpectedly"
+                                    f"{color}{server_name} stopped unexpectedly{Colors.RESET}"
                                 )
                                 break
                         self.processes.remove(process)
@@ -188,8 +258,14 @@ class ServerLauncher:
                 except:
                     pass
 
+        # Wait for log threads to finish
+        for thread in self.log_threads:
+            if thread.is_alive():
+                thread.join(timeout=1)
+
         self.processes.clear()
         self.server_info.clear()
+        self.log_threads.clear()
         logger.info("All servers shutdown")
 
 
