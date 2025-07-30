@@ -66,13 +66,11 @@ class ServerLauncher:
                 logger.error("Virtual environment not found")
                 return None
 
-            # Launch the server
+            # Launch the server - don't capture output so logs are visible
             cmd = [str(venv_python), str(server_file), "--port", str(port)]
             logger.info(f"Starting {server_file.name} on port {port}")
 
-            process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
+            process = subprocess.Popen(cmd)
 
             # Store server information
             self.server_info[server_file.name] = {
@@ -149,16 +147,9 @@ class ServerLauncher:
                         # Find and log stopped server
                         for server_name, info in self.server_info.items():
                             if info["process"] == process:
-                                logger.warning(f"{server_name} stopped")
-                                # Show error if available
-                                try:
-                                    _, stderr = process.communicate(timeout=1)
-                                    if stderr:
-                                        logger.error(
-                                            f"{server_name} error: {stderr.strip()}"
-                                        )
-                                except:
-                                    pass
+                                logger.warning(
+                                    f"{server_name} stopped unexpectedly"
+                                )
                                 break
                         self.processes.remove(process)
 
