@@ -1,11 +1,12 @@
 import asyncio
-from fastmcp import Client
-from fastmcp.client.auth import BearerAuth
 from fastmcp.server.auth.providers.bearer import RSAKeyPair
 from pydantic import SecretStr
 from mcpcp import access_control
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
 MCPCP_URL = "http://0.0.0.0:9003/mcp/"
+
 
 
 def generate_token(client_id: str, scopes: list = None):
@@ -33,35 +34,6 @@ def generate_token(client_id: str, scopes: list = None):
     return token
 
 
-class AuthenticatedMCPClient:
-    """MCP client that supports bearer token authentication using FastMCP"""
-
-    def __init__(self, base_url: str, agent_name: str, scopes: list = None):
-        self.base_url = base_url
-        self.agent_name = agent_name
-        self.scopes = scopes or ["list_tools", "call_tools"]
-        self.token = generate_token(agent_name, self.scopes)
-
-    async def list_tools(self):
-        """List available tools using FastMCP client with bearer auth"""
-        async with Client(
-            self.base_url, auth=BearerAuth(token=self.token)
-        ) as client:
-            tools = await client.list_tools()
-            return [{"name": tool.name} for tool in tools]
-
-    async def call_tool(self, tool_name: str, arguments: dict = None):
-        """Call a specific tool using FastMCP client with bearer auth"""
-        if arguments is None:
-            arguments = {}
-
-        async with Client(
-            self.base_url, auth=BearerAuth(token=self.token)
-        ) as client:
-            result = await client.call_tool(tool_name, arguments)
-            return result
-
-
 async def get_allowed_tools(agent_name):
     """Get tools allowed for a specific agent"""
     print(f"\n🔍 Getting tools for agent: {agent_name}")
@@ -69,13 +41,18 @@ async def get_allowed_tools(agent_name):
         f"📋 Agent has access to servers: {access_control.get(agent_name, ['none'])}"
     )
 
+    token = generate_token(agent_name, ["list_tools", "call_tools"])
     try:
-        client = AuthenticatedMCPClient(MCPCP_URL, agent_name)
-
-        tools = await client.list_tools()
-        print(f"✅ Found {len(tools)} tools:")
-        for tool in tools:
-            print(f"   - {tool.get('name', 'unnamed')}")
+        async with streamablehttp_client(
+            MCPCP_URL,
+            {"Authorization": f"Bearer {token}"},
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+        print(f"✅ Found {len(tools.tools)} tools:")
+        for tool in tools.tools:
+            print(f"   - {tool.name}")
 
         return tools
 
@@ -94,6 +71,15 @@ async def demo_different_agents():
     for agent_name in access_control.keys():
         print(f"🔍 Getting tools for agent: {agent_name}")
         await get_allowed_tools(agent_name)
+        token = generate_token(agent_name, ["list_tools", "call_tools"])
+        async with streamablehttp_client(
+            MCPCP_URL,
+            {"Authorization": f"Bearer {token}"},
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("echo", {"message": "test"})
+                print(f"✅ Result from echo tool: {result}\n")
 
 
 async def main():
